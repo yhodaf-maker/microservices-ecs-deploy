@@ -1,138 +1,308 @@
-# Microservices → ECS/ECR via GitHub Actions (OIDC)
+# Inventory & Orders Microservices Platform
 
-> Take two small, dependent microservices from your laptop all the way to
-> **Amazon ECS Fargate** — shipped by a **GitHub Actions** pipeline that
-> authenticates to AWS with **OIDC**. **No SSH. No AWS access keys. Ever.**
+A cloud-native microservices application deployed on AWS ECS Fargate using a fully automated CI/CD pipeline with GitHub Actions and OIDC authentication.
 
-This is a hands-on lab. You start with two Flask services that talk to each
-other, and by the end you have a real, repeatable deploy pipeline pushing them
-to AWS on every `git push`.
+This project demonstrates how to build, containerize, deploy, and operate multiple services on AWS using modern DevOps practices without storing AWS access keys.
 
 ---
 
-## Why this lab
+# Project Overview
 
-Most "deploy to the cloud" tutorials stop at a single container behind a load
-balancer. Real systems are messier: services depend on each other, secrets leak
-when you store long-lived keys, and "it works on my machine" hides deploy bugs.
+The platform consists of two Python Flask microservices:
 
-This lab tackles all three:
+### Inventory Service
 
-- **Service-to-service dependency** — `orders` can't answer a request without
-  calling `inventory`. You prove that call works *locally* first, so any later
-  failure is a deploy problem, not an app problem.
-- **Keyless AWS auth** — GitHub Actions assumes an IAM role via **OIDC**. There
-  are no AWS access keys stored as GitHub secrets to leak or rotate.
-- **Declarative, idempotent deploys** — each service ships from a templated ECS
-  task definition, tagged by commit SHA, through a GitHub Actions matrix.
+The Inventory Service maintains product availability information and exposes an API used by other services to determine whether a product is currently in stock.
 
-You learn the same patterns you'd use to run microservices in production — just
-scaled down to two services you can hold in your head.
+Example inventory data:
 
----
-
-## What you'll build
-
-```
-git push → GitHub Actions (matrix: inventory, orders)
-               │
-               ├─ [OIDC → AWS, no stored keys]
-               ├─ [docker build + push] ──────→ Amazon ECR (one repo per service)
-               └─ [render + deploy task def] ──→ Amazon ECS Fargate
-                                                       │
-                                          inventory-service   orders-service
-                                          (private)           (behind the ALB)
-                                                   ▲                  │
-                                                   └── Service Connect ┘
-                                                                       │
-                                                       Application Load Balancer
-                                                                       │
-                                                       http://<alb-dns-name>/orders
+```json
+{
+  "widget": true,
+  "gadget": false
+}
 ```
 
-`inventory` is never exposed publicly; only `orders` sits behind the load
-balancer and reaches `inventory` over a private Service Connect DNS name. The
-end-to-end win is hitting the ALB and watching the two services collaborate.
+---
+
+### Orders Service
+
+The Orders Service receives customer orders and validates inventory availability before confirming or rejecting the order.
+
+Example request:
+
+```http
+POST /orders
+```
+
+```json
+{
+  "sku": "widget",
+  "quantity": 2
+}
+```
+
+Possible responses:
+
+```json
+{
+  "status": "confirmed"
+}
+```
+
+or
+
+```json
+{
+  "status": "backordered"
+}
+```
+
+The Orders Service depends on the Inventory Service and communicates with it through AWS Service Connect and Cloud Map service discovery.
 
 ---
 
-## The two services
+# Architecture
 
-You're **given** the application code so the lab stays focused on
-containerization and deployment — not on writing Flask.
-
-| Service | Endpoint | Behavior |
-|---|---|---|
-| inventory | `GET /health` | `{"status": "ok"}` |
-| inventory | `GET /stock/<sku>` | `{"sku": ..., "quantity": ...}` — `0` for unknown SKUs |
-| orders | `GET /health` | `{"status": "ok"}` |
-| orders | `POST /orders` `{"sku", "quantity"}` | Calls inventory → `"confirmed"` / `"backordered"`, or `503` if inventory is unreachable |
-
-Each service folder ships its `app.py`, `requirements.txt`, a templated
-`task-definition.json`, and tests.
-
----
-
-## What you write yourself
-
-The instructive parts are left to you:
-
-- A `Dockerfile` for each service → [Step 02](steps/02-containerize.md)
-- `docker-compose.yml` to run both together → [Step 03](steps/03-compose-local.md)
-- `.github/workflows/deploy.yml`, the OIDC deploy pipeline → [Step 07](steps/07-write-the-pipeline.md)
-
-And you provision **all** the AWS infrastructure yourself from the console —
-OIDC trust, ECR, the ECS cluster, Service Connect, and the load balancer
-([Step 04](steps/04-github-repo.md) and [Step 05](steps/05-provision-aws-infra.md)).
-Nothing is pre-provisioned for you.
+```text
+                ┌─────────────────┐
+                │     Client      │
+                └────────┬────────┘
+                         │
+                         ▼
+          ┌─────────────────────────────┐
+          │ Application Load Balancer   │
+          └──────────────┬──────────────┘
+                         │
+                         ▼
+                ┌─────────────────┐
+                │ Orders Service  │
+                │   ECS Fargate   │
+                └────────┬────────┘
+                         │
+                         │ Service Connect
+                         │
+                         ▼
+                ┌─────────────────┐
+                │ Inventory       │
+                │ Service         │
+                │ ECS Fargate     │
+                └─────────────────┘
+```
 
 ---
 
-## The path
+# AWS Infrastructure
 
-Work through these in order — each ends with a checklist; don't move on until it
-passes.
+The platform is deployed entirely on AWS and includes the following components:
 
-| # | Step | What you do |
-|---|---|---|
-| 1 | [Local development setup](steps/01-local-dev-setup.md) | Create a virtualenv per service, install deps, run the tests |
-| 2 | [Containerize each service](steps/02-containerize.md) | Write a `Dockerfile` for inventory and orders |
-| 3 | [Run both locally with Compose](steps/03-compose-local.md) | Write `docker-compose.yml`, prove the cross-service call |
-| 4 | [Prepare the GitHub repo](steps/04-github-repo.md) | Publish the repo from VS Code; build the OIDC provider + deploy role yourself |
-| 5 | [Provision the AWS infrastructure](steps/05-provision-aws-infra.md) | Create the execution role, ECR, log groups, the cluster, Service Connect, task definitions, and security groups |
-| 6 | [Create the ECS services](steps/06-create-ecs-services.md) | Create both services and the ALB; wire up Service Connect and the security groups |
-| 7 | [Write the deploy pipeline](steps/07-write-the-pipeline.md) | Author `.github/workflows/deploy.yml` (the core exercise) |
-| 8 | [Deploy & verify end-to-end](steps/08-deploy-and-verify.md) | Push, watch the run, hit the ALB, prove the dependency |
-
----
-
-## Concepts covered
-
-| Concept | What you learn |
-|---|---|
-| Python virtualenvs | Isolated, reproducible per-service dependencies |
-| Dockerfiles | Containerizing a Python web service from scratch |
-| Docker Compose | Wiring multiple services together for local dev |
-| GitHub OIDC | Passwordless AWS auth from GitHub Actions — no stored access keys |
-| IAM trust policies | Scoping which repo + branch can assume which role |
-| Amazon ECR | Per-service container registries, commit-SHA image tags |
-| Amazon ECS Fargate | Serverless container orchestration |
-| ECS Service Connect | Service-to-service discovery via a private Cloud Map DNS namespace |
-| Render + deploy task definitions | Declarative, idempotent ECS deploys from a JSON template |
-| GitHub Actions matrix | Two services deployed independently in the same workflow |
-| Application Load Balancer | Only the public-facing service is exposed; the internal one isn't |
+- Amazon ECS Fargate
+- Amazon ECR
+- Application Load Balancer (ALB)
+- AWS Cloud Map
+- AWS Service Connect
+- CloudWatch Logs
+- IAM Roles
+- GitHub OIDC Provider
+- ECS Task Definitions
+- ECS Services
+- Security Groups
 
 ---
 
-## Done when
+# CI/CD Pipeline
 
-- [ ] A virtualenv exists per service and both test suites pass ([Step 1](steps/01-local-dev-setup.md))
-- [ ] You wrote a `Dockerfile` for each service ([Step 2](steps/02-containerize.md))
-- [ ] `docker compose up` proves the cross-service call works locally ([Step 3](steps/03-compose-local.md))
-- [ ] You built the OIDC provider + deploy role yourself; no AWS access keys as secrets ([Step 4](steps/04-github-repo.md))
-- [ ] You provisioned the execution role, ECR, log groups, the cluster, Service Connect, task definitions, and security groups ([Step 5](steps/05-provision-aws-infra.md))
-- [ ] You created both ECS services and the ALB ([Step 6](steps/06-create-ecs-services.md))
-- [ ] You wrote `.github/workflows/deploy.yml` from scratch ([Step 7](steps/07-write-the-pipeline.md))
-- [ ] A push to `main` runs your workflow; both matrix jobs go green independently ([Step 8](steps/08-deploy-and-verify.md))
-- [ ] `aws ecs describe-services` shows both services with `running == desired`
-- [ ] The ALB returns `confirmed` / `backordered` correctly through the real deployment
+Deployments are fully automated using GitHub Actions.
+
+Every push to the `main` branch triggers a deployment pipeline that:
+
+1. Checks out the source code
+2. Authenticates to AWS using OIDC
+3. Builds Docker images
+4. Pushes images to Amazon ECR
+5. Updates ECS Task Definitions
+6. Deploys new revisions to ECS Fargate
+7. Waits for service stability validation
+
+No AWS access keys or secrets are stored inside GitHub.
+
+Authentication is performed using OpenID Connect (OIDC) and temporary AWS credentials.
+
+---
+
+# Deployment Flow
+
+```text
+Developer
+    │
+    ▼
+Git Push
+    │
+    ▼
+GitHub Actions
+    │
+    ├── Build Docker Images
+    │
+    ├── Push Images to Amazon ECR
+    │
+    ├── Render ECS Task Definitions
+    │
+    └── Deploy to ECS Fargate
+                │
+                ▼
+        Running Services
+```
+
+---
+
+# Repository Structure
+
+```text
+.
+├── .github
+│   └── workflows
+│       └── deploy.yml
+│
+├── inventory-service
+│   ├── app.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── task-definition.json
+│
+├── orders-service
+│   ├── app.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── task-definition.json
+│
+└── README.md
+```
+
+---
+
+# Technologies Used
+
+### Programming
+
+- Python
+- Flask
+
+### Containers
+
+- Docker
+
+### AWS
+
+- Amazon ECS Fargate
+- Amazon ECR
+- Application Load Balancer
+- Cloud Map
+- Service Connect
+- IAM
+- CloudWatch Logs
+
+### CI/CD
+
+- GitHub Actions
+- OpenID Connect (OIDC)
+
+---
+
+# Key DevOps Concepts Demonstrated
+
+- Containerization using Docker
+- Microservices architecture
+- Service-to-service communication
+- Service discovery using AWS Cloud Map
+- AWS Service Connect
+- Infrastructure deployment on ECS Fargate
+- Application Load Balancing
+- Continuous Integration and Continuous Deployment
+- Secure AWS authentication using OIDC
+- Immutable deployments using image tags
+- Centralized logging with CloudWatch
+
+---
+
+# Local Development
+
+Build Inventory Service:
+
+```bash
+docker build -t inventory-service ./inventory-service
+```
+
+Build Orders Service:
+
+```bash
+docker build -t orders-service ./orders-service
+```
+
+Run locally using Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+---
+
+# Example API Calls
+
+Health Check:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Create Order:
+
+```bash
+curl -X POST http://localhost:8080/orders \
+-H "Content-Type: application/json" \
+-d '{"sku":"widget","quantity":2}'
+```
+
+Expected Response:
+
+```json
+{
+  "status": "confirmed"
+}
+```
+
+---
+
+# Learning Objectives
+
+This project was created to demonstrate a complete deployment workflow for microservices running on AWS.
+
+The focus areas include:
+
+- Designing containerized services
+- Deploying workloads on ECS Fargate
+- Implementing service discovery
+- Building secure CI/CD pipelines
+- Using GitHub Actions with AWS OIDC
+- Automating deployments without long-lived credentials
+
+---
+
+# Future Improvements
+
+Potential enhancements include:
+
+- Infrastructure as Code using Terraform
+- Blue/Green deployments
+- Automated testing stages
+- AWS WAF integration
+- ECS Auto Scaling
+- Monitoring dashboards with CloudWatch
+- Distributed tracing and observability
+
+---
+
+# Author
+
+Yehuda Feder
+
+DevOps Engineer in Training | AWS | Docker | Kubernetes | CI/CD | GitHub Actions
